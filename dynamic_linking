@@ -1,0 +1,67 @@
+In the build process, we first compile the separate compilation units
+into object files.
+Then the linker links the object files into one executable.
+When we use libraries in our code we can use dynamic or static 
+linking. Static linking is very similar to linking our own files together
+because the files in the library are linked together with our object
+files into one big executable. All the symbols are resolved by the
+linker at link time and the executbale can be loaded and run without
+any subsequent intervention from the linker.
+On the other hand we have dynamic linking where the libraries are not
+linked with our code at link time. Instead every reference to an external 
+function which is in the library is going to be resolved into an entry
+in the PLT - procedure linkage table.
+At runtime when we first call a library function we are directed into
+the approparite entry in the PLT for this function.
+The PLT entry is going to redirect us to ld.so - the load linker, with
+the symbol to be resolved. the linker resolves the address and returns
+with the information that is saved in the GOT - global offset table.
+The PLT entry is marked so we will know in subsequent calls to the same 
+function that it's address has already been resolved. In the next call
+to the same function the PLT entry will redirect into the GOT entry where
+the address is stored.
+When the library itself calls another function within the same library it
+is resolved into a GOT entry, which redirects to the PLT entry which redirects
+yet again into the ld.so where the address is resolved and saved into the
+GOT. subsequent calls to that function from withing the library are going
+to be redirected into the GOT entry where the address is already stored
+and thus can be resolved.
+
+Let's dive into some more details.
+For the library code to run it needs to be mapped into the address space of
+the process. It can be loaded into any address, and thus the question
+arises: what addresses are going to be used in the library code?
+
+let's say you have an instruction in the library:
+call foo
+foo is some function and needs to be resolved into some address.
+however a scheme where we set foo to some absolute constant address, 
+e.g foo=0xeabcd891 is not going to work since foo might be loaded into
+some completely other address in the address space of the process.
+This is why we use a relative addressing scheme in order to create
+position independent code (PIE).
+The library code keeps itself position independent by resolving the
+names into relative addresses instead of absolute addresses.
+The actual address of the symbol is going to be stored in the GOT table 
+inside the process which is going to be filled when the library is loaded in.
+the library code itself if we want to call some function foo we will have
+mov rax, [rip + foo@GOT]
+call rax
+Where foo@GOT itself is going to be some actual value which differes between
+different instructions.
+The first instruction goes to the address rip + foo@GOT which points to the
+entry in the GOT which holds the address of the function we want to call and 
+stores the entry into rax.
+the second instruction just call a the function using its address stored in
+rax.
+this way every instruction which needs to reference some name in the library
+does so by a relative address, that is relative to the current instruction.
+
+The entire scheme we described above with the PLT is used in order to allow
+lazy binding where the actual binding happens only when the function is actually
+called.
+
+
+
+
+
