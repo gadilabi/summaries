@@ -1,0 +1,61 @@
+Single process in memory
+========================
+Back in the days of batch computing, computers ran processes in sequence, i.e 
+ran the first process to completion, then the second and so forth, 
+each process could just use the entire memory of the system
+excluding some portion used by the OS.
+
+Batch computing does not provide interactivity which the users needed.
+Therefore systems started running multiple processes concurrently (or seemingly
+concurrently). This poses quite a problem, in terms of memory management, as the processes
+would overwrite each others memory if no mechanism would be put in
+place.
+
+The simplest approach would be allowing each process to use all of
+physical memory and when we want to switch to a different process
+we would save its memory into secondary memory and load the memory
+of the new process into memory and then start running it.
+This approach is way too slow and expensive and so a different more
+realistic approach is needed.
+The alternative to having a single process running in memory at
+a time, is sharing the memory between multiple different processes.
+sharing the memory however, raises new problems that we would have to solve.
+
+Memory sharing
+==============
+sharing the memory between multiple processes creates a few problems.
+The first problem is that every process has access to the memory of every
+other process sharing the memory. This opens up the possibility for 
+malicious programs to get information they should not be exposed to
+or corrupting sensitive data. Actually it would be very easy for memory
+corruption to happen even without any malicious intent, as every
+C programmer knows.
+Thus our goal is to allow multiple processes to reside simutaneously in 
+memory while keeping them isolated from each other.
+One solution to these problems is virtual memory.
+
+Virtual memory
+==============
+Virtual memory is an abstraction the OS provides to processes.
+Basically, the process is allowed to act as if it is the only
+process in memory. It has an address space that it uses for the different
+segments of the program.
+usualy the code (.text) and data (.data) sections are at low addresses
+then comes the heap, and at the end of the virtual address space comes
+the stack which grows backwards to lower addresses.
+This layout is system dependent and different operating systems can
+use different layouts. Also notice that the memory needs to contain
+more segments that are left unmentioned to keep things simple.
+
+When a program is running it needs to fetch instructions and data from
+memory. Let's say we have two processes p1 and p2 running on our system.
+Each of them acts as if it is the only process that uses the memory.
+If both of them use the layout we described above then when we look at the 
+code for p1 and p2 they will both have the first instruction at address 0.
+Obviously they are not alone in memory but share it between them, and so
+it is impossible for both of them to use address 0.
+Now it's the job of the OS together with some hardware support to maintain
+the illusion, and it should do so correctly, transperently and efficiently.
+
+Base and bounds
+===============

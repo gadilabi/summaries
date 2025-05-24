@@ -1,0 +1,683 @@
+Linking
+=======
+C source code contains many different names for functions and variables. By the
+end of the translation process we get machine code where all these names must
+be transformed, in some way or another, to locations in memory. 
+
+Some objects naturally have a constant address throughtout the execution of a
+program, e.g functions and global variables, while others have addresses which
+are context dependent, e.g local automatic variables.
+The compiler first translates the C code into assembly.
+The names of functions and global variables are going to appear in the assembly
+code. Local variables on the other end are not going to show up. The way we
+reference local variables in assembly code is simply using a location relative 
+to the base pointer register which points to the beginning of the current stack frame.
+
+Assume we have this simple C code:
+
+int compute()
+{
+	int x = 2;
+	return 1;
+}
+
+Generate the assembly with:
+
+gcc -S -masm=intel main.c
+
+and if we ignore some of the irrelevant lines we get:
+
+compute:
+	push	rbp
+	mov	rbp, rsp
+	mov	DWORD PTR [rbp-4], 2
+	mov	eax, 1
+	pop	rbp
+	ret
+main:
+	push	rbp
+	mov	rbp, rsp
+	mov	eax, 0
+	call	compute
+	mov	eax, 0
+	pop	rbp
+	ret
+
+The assignment to the local variable x is the instruction in
+the third line. Notice that the name of the variable is not 
+mentioned. The insruction means: place the value 2 into the memory
+location rbp-4 which is simply the location in the frame we
+use for this variable. The location of the variable is constant
+in relation to the stack frame but the location of the stack frame
+itself is context dependent and depends on the specific backtrace
+at the time the function was called.
+Therefore auto variables don't need to show in our assembly code.
+
+The function name, compute, does actually appear in the assembly, and so
+would every static variable (a static variable is a variable that persists
+throughout the lifetime of the program not necessarily a variable defined using
+the static keyword). 
+
+The next part in the translation would be from assembly
+to machine code done by the assembler.  One part of this process is the
+translation of text instructions into their binary encodings. A second part
+of the translation which is of more interest to us- the programmers, is
+creating metadata to be later used by the linker.
+
+The output of the assembler is an object file.
+The object file on a linux system is in a special format called 
+ELF (Executable Linkable Format).
+The object file contains many different sections, like a .text section
+which has the code, a .data section which holds the static variables
+and other sections which contain metadata like symbol and relocation
+tables which will be used by the linker in the last stage of the 
+translation.
+
+The next stage of the translation is done by the linker.
+The linker takes multiple object files and links them together 
+to create one executable. It does so in two stages:
+
+1) It concatenates corresponding sections to create the section
+of the whole program. For example it takes the .text sections of all
+the object files and concatenates them to create one .text section 
+for the executable. 
+
+2) It resolves the addresses throughout the code.
+
+The assembly code of a single compilation unit contains 
+symbols which are defined in the same compilation unit and
+external symbols which are (hoplefuly) defined in some other
+object file.
+In the assembling process the assembler creates a symbol table
+that contains an entry for each symbol in the program.
+The main purpose of the symbol table is to hold the location
+of the symbol. The assembler can only find the locations of the
+symbols defined in the current compilation unit, while the location of 
+external symbols is left for the linker to fill in. 
+Notice I've used the term locations instead of addresses.
+The assembler can't yet know what is going to be the absolute address, even of
+symbols defined in the same compilation unit, but only their offset in the
+section they reside in. This is because the sections in a compilation unit is
+going to be concatenated with sections from other compilation units.
+So, the assembler fills the symbol table with the offsets of
+each symbol in the current compilation unit.
+The absolute addresses are going to be determined by the linker.
+
+The linker knows the absolute base address of each section of each object file it
+concatenates and together with the offset data from the symbol table it can
+determine the exact absolute address of each symbol in the program. 
+Another critical piece of information for the linker is where the different
+symbols are referenced throughout the code, so the linker will know where it
+needs to fill in the actual addresses.
+This information is saved in a relocation table created by the assembler as well.
+Just like the symbol table, so does the relocation table contains only offsets
+which are replaced with the actual addresses by the linker. Now all that's left
+for the linker to do is run through the rellocation table and update the address
+of each reference to a symbol in the .text section to the actual address of the
+symbol. 
+After this stage every placeholder address for a symbol has been replaced by the
+actual proper address of that symbol.
+
+Static libraries
+================
+A static library in C is a collection of object files which were put together
+into a single archive file.
+Assume we have the object files file1.o file2.o and file3.o, we can create
+a static library from these files by using the command:
+
+ar rcs libfoo.a file1.o file2.o file3.o
+
+The output is a single archive file named libfoo.a.
+Now, if we have some file client.o which needs the functionality of the library
+then we can link to the library like so:
+
+gcc -o exec client.o -L. -lfoo
+
+the -L flag tells the linker where to search for the libraries.
+In our case -L. means that the library is in the current directory.
+The -l tells the linker to link to the library libfoo.a.
+Notice that all library names must be in the form lib<name> and then only the
+<name> must be written in the command itself.
+
+we can also use the library like so:
+gcc -o exec client.c libsum.a
+
+The output is an executable named exec, which contains all the definitions 
+needed for the execution of the program. Linking against a library adds to the
+executable only the object files from the library that contain symbols refered
+to in the client.o file. This is an extremely important point and is one of the
+main advantages of using a library over simply using a single libfoo.o object
+file that contains all the contents of the library. Linking against such a file
+would incorporate all of its contents into the executable which is wasteful 
+both in terms of hard disc usage and memory usage at runtime. Moreover having a
+single libfoo.o file means that every small change would require recompilation
+of libfoo.o.
+Another possible alternative would be separating the libfoo.o into multiple 
+object files, that would make it easier to update the library, but then the user
+would have to link to the object files he needs explicitly which is error prone
+and cumbersome.
+The library solve all these problems. It can be updated easily since it is
+essentially a collection of separate objects files, it adds to the executable the
+bare minimum required from the library and it is very easy to use as it does not
+require the user to specify explicity which files from the library it needs.
+
+The symbol resolution process when linking to a static library can be tricky
+and baffles unexperienced developers, so it would be worth our while to explain
+it briefly.
+Assume we write a command:
+gcc file1 file2 file3 ...
+where each file can be either and object file or a library.
+The linker saves three sets:
+E - files to combine into the executable
+U - symbols refered to but yet undefined
+D - symbols that we have the definition for.
+
+the linker passes over the files from left to right.
+if the file is an object file it adds it to E and updates U and D accordingly.
+if the file is a static library it search for the symbols of U in the files
+of the library. If a symbol is found it adds the file that defined it into 
+E and updates U and D.
+When the linker is done U must be empty (unless it is also linked dynamically 
+which we will get to soon).
+The way this process works means that the order in which files are placed in the 
+command matter.
+If we have a file client.o that uses a definition from libfoo.a of a function bar
+and we compile using the following command:
+
+gcc libfoo.a client.o
+
+we will get and error that bar is undefined, which can be baffling if you don't 
+understand the way the linking process works.
+since the libfoo.a was first, the set of undefined symbols U is empty and so
+no symbol resolution will take place. when we get to client.o we add bar to the
+set U but it is never getting resolved because the linker is not going to search
+the library again. The solution is to simply switch places:
+
+gcc client.o libfoo.a
+
+this way bar will be in U as the linker reached libfoo.
+
+This process can lead to more complications in certain scenarios like having 
+circular dependency. where for example we use two libraries and each is dependent
+on the other. In this case we would have to mention one of them multiple time on
+the command line like so:
+
+gcc client.o libfoo.a libbar.a libfoo.a
+
+the first libfoo.a in the command will add to U the symbol needed from bar,
+then libbar.a would resolve it and add to U the symbol it needs from foo, and
+eventually the last libfoo.a will resolve it.
+
+Certain libraries like the standard library, are used in almost every application.
+This means that if we use the standard library as a static library we would have
+a copy of many parts of the library in many applications, and when these applications
+run we will have many copies of standard library code loaded separately into
+ram for each running application. Obviously this is wasteful and requires
+rethinking the way we use libraries.
+Ideally we would like to have a single copy of the library code on disc, and a
+single copy of it loaded into ram with multiple applications sharing it.
+This approach is called dynamic linking and it's the subject we will cover next.
+
+Shared Objects and Dynamic Linking
+==================================
+A shared object as the name suggests is a piece of code that can be loaded into
+memory once and shared by every process on the system that needs it. This means that 
+this shared code is not a part of the executables that uses it. 
+
+First, let's see how you can create a shared object.
+Assume we have a few object files file1.o file2.o file3.o and we want to turn 
+them into a shared object. we will type:
+
+gcc --shared -o libfoo.so file1.o file2.o file3.o
+
+This command creates a shared object named libfoo.so.
+The extension .so stands for shared object.
+Notice that the name convention lib<name> is used in both dynamic and static
+libraries.
+
+Later if we have a client.o file that wants to use the library we will use:
+
+gcc -o exec client.o -L. -lfoo -Wl,-rpath,.
+
+let's break this down:
+-L. - search the linked libraries in the current directory.
+-lfoo - link to the library libfoo.so
+-Wl - pass the following options to the linker
+-rpath,. - embed inside the executable the path . as a search location
+for the libraries.
+
+This command dynaimically links the client.o with libfoo.so into an 
+executable. The created executable DOES NOT contain the code of libfoo.so, 
+which raises the question - how will the code in client.o be able to use library 
+definitions?
+
+The linking process embededs in the executable both the names of the libraries
+that are needed (the -l flag) and where to search for them (the -rpath flag).
+This information is stored in the .dynamic section of the executable (you can
+examine it with readelf -d exec).
+So, when the program is loaded the loader can see inside the executable which
+libraries are needed and where to search for them.
+
+It's important to note that the -L flag is used in the compiling stage to tell
+the compiler where to search for the library (beyond the normal places it 
+usualy looks in like the location of the standard libraries) while the linker 
+flag -rpath tells the linker where to search the library at load time. These
+two location can be completely different, as the executable might be built 
+with the library being at the same directory but moved afterward to some 
+central location with other libraries.
+
+Dynamic libraries can be linked dynamically themselves to another dynamic
+library. For example assume we have three files:
+
+#main
+int main()
+{
+	return foo1();
+}
+
+#foo1
+int foo1()
+{
+	return foo2();
+}
+
+#foo2
+int foo2()
+{
+	return 0;
+}
+
+the build process will look like this:
+
+gcc -c -fpic foo2.c
+gcc -c -fpic foo1.c
+gcc --shared -o libfoo2.so foo2.o
+gcc --shared -o libfoo1.so foo1.o -lfoo2 -L. -Wl,-rpath,.
+gcc -c main.c
+gcc main.o -L. -lfoo1 -Wl,-rpath,.
+
+The output file named a.out was linked to libfoo1.so but the linker is smart
+enough to look recursively at the dependencies and knows that since libfoo1.so
+is dependent on libfoo2.so so is a.out.
+
+We can confirm it by using the command ldd:
+
+ldd a.out
+
+linux-vdso.so.1 =>  (0x00007ffe21937000)
+libfoo1.so => ./libfoo1.so (0x00007faf735f6000)
+libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007faf7322d000)
+libfoo2.so => ./libfoo2.so (0x00007faf7302b000)
+/lib64/ld-linux-x86-64.so.2 (0x00007faf737f8000)
+
+this command lists the dependencies of the executable and their paths.
+This is the information embeded by the -rpath linker option at link time.
+
+When the program a.out is ran, the dynamic linker checks this dependency list
+and loads the libraries into main memory if they are not already loaded, and
+the OS maps them into the address space of the process created for a.out.
+The loaded library has its own .text section and .data section.
+
+When object files are linked statically the linker can resolve the addresses at
+link time. However we don't know where in memory the shared object is going to
+be placed which poses a challenge both in the code of the library itself which
+must run correctly no matter where it's loaded to and for the code the links
+to the library which somehow needs to be able to call functions whose address
+is unknown until runtime. The solution to these problems is using position 
+independent code (PIC).
+
+Position Independent Code (PIC)
+===============================
+Whenever we use absolute addresses in our executable we limit our program to be
+loaded into specific addresses for our code to work properly. so if the address
+of some function was set to be 0x100 and references to it throught the code
+were replaced by this address then it would have to be loaded at address 0x100.
+This is not a terrible limitation, but in some cases like that of dynamically
+linked libraries which needs to be able to work correctly no matter where they
+are loaded into memory this is a problem. The solution to this problem is
+position independent code (PIC).
+
+PIC is desgined to work no matter the location it's loaded into. This can be
+achieved using a combination of indirection and relative addressing.
+Assume I have the following assembly instruction:
+
+call foo
+
+This can be translated into two different machine code instructions.
+One possible translation is to an instruction that uses the absolute address of
+foo. A second option is a translation to an instruction that uses the relative 
+address i.e the offset between the current instruction and the address of foo.
+Relative addressing used for static functions inside the library.
+It's possible to use relative addressing for public functions as well, that's 
+what is actually done under windows, but on linux another more complex mechanism 
+is used to allow for what's called symbol interposition.
+
+The second mechanism we talk about is indirection.
+Let's say we have a (non-static) function foo.
+The symbol is going to be resolved in the library code to a relative address to an
+entry in what is known as the global offset table (GOT). 
+The entry in the table is going to hold the actual absolute address of foo.
+So after creating the shared object, all the global symbols-
+functions and variables, are resoloved to relative addresses to entries inside
+a table that holds the actual absolute address of the symbol. When a program is
+first loaded the GOT is empty. It needs to be filled with the correct addresses.
+This process can be done lazily, i.e only when necessary, or eagerly, i.e when
+the program first loads up into memory. variables are resolved eagerly while 
+functions are resolved lazily.
+The logic behind this is that there are usualy few static variables, and they
+are usualy needed in the beginning of the program, therefore eager binding makes
+sense for them. On the other hand there can be a huge number of functions in a 
+library, most of which are not going to be used by the program. Therefore it's 
+better to load them lazily as most of them are not going to need resolving at
+all.
+
+So we now know that the addresses in the shared object code are either relative
+addresses when we refer to static functions, and to the GOT entry when the it's
+a static variable or a global function. We also know that the GOT entries for 
+variables are filled at load time, while those of functions fill at runtime.
+But how does the symbol resolution of functions work lazily at runtime?
+The answer is the procedures Linkage table (PLT).
+
+The PLT contains an entry for each non-static function in the library.
+The PLT is a table of short stubs of code all with the exact same structure.
+The first instruction is a jump to the location stored in the GOT entry for
+the function (each function has both a GOT and a PLT entry, so the PLT uses
+the GOT entry of the same function). The GOT entries are initialized with the
+address of the second instruction in the PLT stub for that function, so the jump
+just brings us to the second instruction in the PLT. Then the PLT pushes onto
+the stack a number which is the offset of the symbol we are trying to bind inside
+the .rel.dynamic table. Finally the PLT jumps to the dynamic linker's code.
+The dynamic linker uses the location pushed on the stack and other tables inside
+the ELF binary to find the absolute address of the function and store it inside
+the GOT entry for that function.
+The next call for the same function will jump again to the PLT stub which will
+jump to the address stored in the GOT entry, but now it's the actual absolute 
+address of the funtion so we will just jump directly to the function.
+
+So, position independent code can be achieved through a combination of relative
+addressing and indirection through the GOT. The PLT mechanism supplies us with
+the ability to load symbols lazily.
+
+Back To The Executable
+=======================
+We now know how symbols are resolved within the shared library.
+Next, we need to understand what happens when one library calls to a function
+of a different library, or when the code using the library is calling some
+library functoin.
+
+It turns out we already have all the needed tools at out disposal.
+Each library has GOT and PLT entries for external functions used inside the 
+current library. When one of these functions is called the same process of symbol
+resolution ensues. Each library has its own GOT and PLT entries.
+The same is true for the executable code itself. 
+
+Notice that when we use a shared object, it's stored in physical memory only once
+and mapped into the virtual address space of every process that requires it.
+The data section, GOT and basically every part that needs to be written to
+by the process will be loaded again to physical memory as these parts cannot be
+shared by multiple processes.
+
+let's look at the following code:
+
+int x = 3;
+
+int sum(int a)
+{
+	return a + x;
+}
+
+compile into an object file with:
+gcc -c -fpic sum.c
+
+then inspect the assembly with:
+
+objdump -dwr -Mintel sum.o
+
+sum.o:     file format elf64-x86-64
+
+Disassembly of section .text:
+
+sum.o:     file format elf64-x86-64
+
+Disassembly of section .text:
+
+0000000000000000 <sum>:
+   0:	55                   	push   rbp
+   1:	48 89 e5             	mov    rbp,rsp
+   4:	89 7d fc             	mov    DWORD PTR [rbp-0x4],edi
+   7:	48 8b 05 00 00 00 00 	mov    rax,QWORD PTR [rip+0x0]        # e <sum+0xe>	a: R_X86_64_GOTPCREL	x-0x4
+   e:	8b 10                	mov    edx,DWORD PTR [rax]
+  10:	8b 45 fc             	mov    eax,DWORD PTR [rbp-0x4]
+  13:	01 d0                	add    eax,edx
+  15:	5d                   	pop    rbp
+  16:	c3                   	ret    
+
+At offset 7 there is a comment added after the instruction. The comment says
+that a relocation is going to take place at this instruction starting at byte a
+(inclusive) and ending in byte e (exclusive). It also states what type of
+relocation, i.e R_X86_64_GOTPCREL, is going to take place.
+First let's break down the relocation type: 
+R is for relocation. 
+x86_64 is the architecture.
+GOTPCREL is a conctanation of three words:
+GOT - global offset table (which we will discuss shortly)
+PC- program counter
+REL- for RELative
+
+it means that the value that's going to be placed there by the linker is the
+offset of an entry in the GOT from the program counter (which is called
+instruction pointer in x86).
+
+if we check the relocation table we get:
+readelf -r sum.o
+
+Relocation section '.rela.text' at offset 0x550 contains 1 entries:
+  Offset          Info           Type           Sym. Value    Sym. Name + Addend
+00000000000a  000800000009 R_X86_64_GOTPCREL 0000000000000000 x - 4
+(only relevant line is shown)
+
+Where we can see again the offset in which the relocation is going to take place (0xa), the
+type of the relocation (R_X86_64_GOTPCREL) and the symbol we are replacing (x).
+
+Since we are building a PIC we can't use an absolute address for the variable x.
+The solution is to create a special table called the global offset table (GOT) which
+is going to hold the actual absolute addresses of the symbols while inside the
+code the addresses are going to refer to the proper entry in the GOT.
+So when compiling PIC the code section can remain the same no matter where the
+code is loaded. Every symbol reference is replaced by an offset to the proper
+GOT entry. Relocation however is unavoidable, because we need the actual addresses
+of different symbols, it's just that the relocations are performed on the GOT
+entries. The dynamic linker needs to set the absolute addresses in the GOT 
+entries so they point at the correct address given the actual position the code
+was loaded at.
+
+A global offset table (GOT) is created by the
+dynamic linker which is used to store absolute addresses of both data and
+functions. The GOT is not a part of the shared library itself and created at
+load time. that means that new memory is allocated for the GOT and it's mapped
+into the process address space. this is in contrast with the rest of the shared
+library itself which might already be allocated in physical memory.
+When we run the program the loader loads it into memory, and then loads all the
+libraries it depends on. the libraries are stored in the memory mapped section
+of the process memory. The dynamic linker passes over the relocation entries and 
+performs the relocation for every data symbol. But what does it actually 
+mapped section of the processes 
+
+can see that there is going to be a relocation for the global
+variable x. We can further check the 
+
+When we use libraries in our code we can use dynamic or static 
+linking. Dynamic linking is now the norm but it's still worth
+understanding static linking.
+Static linking is very similar to linking our own files together
+because the files in the library are linked together with our object
+files into one big executable. All the symbols are resolved by the
+linker at link time and the executbale can be loaded and run without
+any subsequent intervention from the linker.
+
+static libraries are created by first using gcc -c to create object
+files, e.g:
+gcc -g -o file1.o file1.c
+gcc -g -o file2.o file2.c
+we then combine them together into a static library like so:
+ar rcs libfiles.a file1.o file2.o
+which creates a static library named libfiles.a
+we can then use the library like so:
+gcc main.c -o main -L. -lfiles
+where -L tells the compiler the locations to look for the library.
+ 
+On the other hand we have dynamic linking where the libraries are not
+linked with our code at link time to form one executable. Instead the
+the linking process against dynamic libraries will embed the names of
+the libraries inside the executable. Notice that no address resolution
+has been done yet by the process of dynamic linking. 
+When the program run, it's loaded together with the libraries it needs
+into memory. notice that loading does not equate name resolution. the
+addresses of the library functions are still not resolved at this point.
+It's possible to use "eager binding" and resolve the addresses immediately
+however this will incur a massive cost when the program start to run.
+Instead we usualy use "lazy binding" where address of a function is not
+resolved until the function is called for the first time.
+
+Now it's time to understand how the addresses are resolved which is 
+quite convoluted so pay close attention.
+the executable has a procedure linking table which is a table where
+each entry belongs to some undefined symbol in the executable that needs to
+to be k
+
+Instead every reference to an external 
+function which is in the library is going to be resolved into an entry
+in the PLT - procedure linkage table.
+At runtime when we first call a library function we are directed into
+the approparite entry in the PLT for this function.
+The PLT entry is going to redirect us to ld.so - the load linker, with
+the symbol to be resolved. the linker resolves the address and returns
+with the information that is saved in the GOT - global offset table.
+The PLT entry is marked so we will know in subsequent calls to the same 
+function that it's address has already been resolved. In the next call
+to the same function the PLT entry will redirect into the GOT entry where
+the address is stored.
+When the library itself calls another function within the same library it
+is resolved into a GOT entry, which redirects to the PLT entry which redirects
+yet again into the ld.so where the address is resolved and saved into the
+GOT. subsequent calls to that function from withing the library are going
+to be redirected into the GOT entry where the address is already stored
+and thus can be resolved.
+
+Let's dive into some more details.
+For the library code to run it needs to be mapped into the address space of
+the process. It can be loaded into any address, and thus the question
+arises: what addresses are going to be used in the library code?
+
+let's say you have an instruction in the library:
+call foo
+foo is some function and needs to be resolved into some address.
+however a scheme where we set foo to some absolute constant address, 
+e.g foo=0xeabcd891 is not going to work since foo might be loaded into
+some completely other address in the address space of the process.
+This is why we use a relative addressing scheme in order to create
+position independent code (PIE).
+The library code keeps itself position independent by resolving the
+names into relative addresses instead of absolute addresses.
+The actual address of the symbol is going to be stored in the GOT table 
+inside the process which is going to be filled when the library is loaded in.
+the library code itself if we want to call some function foo we will have
+mov rax, [rip + foo@GOT]
+call rax
+Where foo@GOT itself is going to be some actual value which differes between
+different instructions.
+The first instruction goes to the address rip + foo@GOT which points to the
+entry in the GOT which holds the address of the function we want to call and 
+stores the entry into rax.
+the second instruction just call a the function using its address stored in
+rax.
+this way every instruction which needs to reference some name in the library
+does so by a relative address, that is relative to the current instruction.
+
+The entire scheme we described above with the PLT is used in order to allow
+lazy binding where the actual binding happens only when the function is actually
+called.
+
+Notice that the fact theat the library is using relative addressing is what
+makes it position independent and allows the library code to be loaded
+into any address and still running properly.
+However it is important to point that the offset between the library code
+and the GOT must remain the same otherwise the relative addresses won't
+work. 
+
+
+
+th the client code and the library have a plt and a got. the names of library functions in the client code are resolved at compilation time to the addresses of the the appropriate entry in the client plt. on the other hand the names of the library functions are resolved in the library code itself to addresses of the appropriate entries in the library got. when a library function is first called in client code it references the plt entry for the function which calls the dynamic linker which resolves the address, places the address in the appropriate entry in the client got and update the plt entry for the function to point to the function entry in the client got. when a library function is called from library code, it references the library got. the library got contains a reference to the library plt which calls the dynamic linker. the linker resolves the address and places the address in the entry for that function in the library got. no changes are actually need to be made in the library plt since from now on function calls will resolve to the correct address as it is stored in the library got.
+
+from talk
+=========
+dynamic section contains a list of shared objects linked against.
+the dynamic symbol table contains all the symbols that need to be
+resolved from one of these libraries. in shared objects all of the
+symbols including the once defined in the file itself are going to show up in
+the dynamic symbols table.
+on windows there is one segement called idata (import data) which 
+contains a list of libraries and the symbols needed from each one.
+
+the linux implemetation looks less efficient as more lookups are needed.
+the advantage in this design is that we are not hardlinking the place from
+which the symbol definition will be taken and allow interposition as we shall
+now explain. 
+
+the search in the library dependency tree is breadth first, so we first
+search for symbols in the first level of the dependency tree then all libs in
+the second and so forth. that is true even when we use a symbol defined in a
+library which is a leaf in the dependency tree.
+so if we have this simple dependency tree:
+exe -> lib1.so -> lib2.so -> lib3.so
+and the code in lib3.so calls a function foo() the search for the symbols is
+going to start from the root and will go down the tree even if foo is defined in
+lib3.so, and if a definition of foo is found in lib1.so that this is going to be
+the definition used. this behaviour can be overiden using the --bsymbolic* flag.
+the ld_preload environment variable hold a list of libs to load immediately
+after the executable and place them before any other library in the dependency
+tree.
+so, symbols from a shared object can be overriden in linux but cannot be in
+windows. in macs symbol interposition is also possible but it's not the default
+and the -flat_namespace linker flag must be used.
+
+for an executable the resolution of names, that is checking the existence of
+every name used throughout the executable is done at link time. so every name
+used must be defined either in the client object files or in one of the
+libraries they are linked against. 
+on the other hand shared objects default behaviour is using the flag
+--allow-shlib-undefined which allows for existence of undefined symbols in the
+shared object. this makes sense when thinking about the way symbols
+interposition. for example a symbol foo in lib.so might actually be defined in
+the executable but there is not way of knowing that at link time of lib.so.
+this behviour for .so files is not allowed on windows.
+
+this difference allows linux to have circular dependency between libraries while
+in windows it's impossible since we will not be able to compile lib1.c and
+lib2.c individualy because each will contain an undefined symbol which is only
+defined in the other library.
+
+lazy binding is when we resolve a symbol only as it's being used for the first
+time. this is the default in linux and can be overriden with -no-plt flag for
+the linker. in windows eager binding is the default and can be overriden.
+
+the dynamic relocation table holds the names of the variables that needs
+their GOT entry filled and the location of their GOT entry
+
+the regular relocation table is responsible to take the object file and in the
+code itself (!) do the proper relocations. so the name of a function or data
+will point to the PLT or GOT.
+
+the dynamic relocation table helps the dynamic linker find the location in the
+GOT table to update. it references the dynamic symbol table for the symbol
+name.o
+
+when the dynamic linker needs to resolve a symbol it has the
+GOT entry to fill from the dynamic relocation table. then it goes through the
+dynamic symbol tables down the dependency tree in search of the symbol. when it
+finds it it uses the address in the symbol table to fill the GOT.
+
+Every relocation entry contains a type of relocation. 
+There are many different types, and they can be roughly split into two 
+categories: relative and absolute.
+
